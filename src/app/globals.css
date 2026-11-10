@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0b0614;
+  --foreground: #e8e0f0;
+  --card: #160d24;
+  --card-foreground: #e8e0f0;
+  --primary: #7c3aed;
+  --primary-foreground: #f5f3ff;
+  --secondary: #2e1a47;
+  --accent: #a78bfa;
+  --muted: #1f1235;
+  --border: #3b2460;
+  --destructive: #ef4444;
+  --success: #22c55e;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-accent: var(--accent);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0b0614;
+}
+::-webkit-scrollbar-thumb {
+  background: #3b2460;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #7c3aed;
+}
+
+/* Moon glow effect */
+.moon-glow {
+  box-shadow: 0 0 40px 10px rgba(167, 139, 250, 0.35);
+}
+
+.card-glow {
+  box-shadow: 0 0 20px rgba(124, 58, 237, 0.25);
+}
+
+.forest-bg {
+  background-image: radial-gradient(ellipse at top, #1a0b2e 0%, #0b0614 70%);
+}
