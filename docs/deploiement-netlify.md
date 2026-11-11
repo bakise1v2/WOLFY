@@ -1,28 +1,21 @@
 # Déploiement sur Netlify
 
-## Préparer Supabase
+## Base de données intégrée
 
-1. Créez un projet Supabase et configurez son URL, sa clé publique et sa clé `service_role` dans les variables d’environnement Netlify.
-2. Appliquez toutes les migrations du dossier [`../supabase/migrations`](../supabase/migrations), y compris celles des salons privés et de l’accès membre.
-3. Créez une clé de signature d’au moins 32 caractères aléatoires et renseignez-la sous `PRIVATE_ACCESS_SIGNING_KEY`.
-4. Générez les 12 codes d’accès depuis votre poste avec `node scripts/generate-private-access-codes.mjs`. Saisissez les douze valeurs `PRIVATE_ACCESS_*_HASH` dans Netlify et partagez les codes correspondants avec les membres. La sortie contient des secrets : ne la commitez pas et ne la partagez pas publiquement.
+Les salons, les joueurs, l’état des parties et les profils d’accès utilisent **Netlify Database**, sans URL ni clé de base à copier dans le code. Netlify provisionne la base et applique les migrations du dossier [`../netlify/database/migrations`](../netlify/database/migrations) lors du déploiement.
 
-Les profils sont initialisés dans Supabase au premier accès. Les codes peuvent ensuite être renouvelés ou révoqués depuis l’administration. Ne configurez jamais `SUPABASE_SERVICE_ROLE_KEY` comme variable `NEXT_PUBLIC_*`.
+Netlify Database nécessite un forfait à crédits. Son usage du calcul et du réseau consomme des crédits. Si le déploiement signale que la base n’est pas disponible, activez **Data & Storage → Database** pour le site Netlify et vérifiez que le forfait le permet.
+
+Les profils d’accès sont initialisés à la première utilisation. Pour attribuer des codes personnalisés, générez-les localement avec `pnpm generate:private-access-codes` et configurez les valeurs `PRIVATE_ACCESS_*_HASH` dans les variables Netlify. La sortie contient les codes privés : ne la commitez pas et ne la partagez pas publiquement. Une clé de signature facultative peut être fournie avec `PRIVATE_ACCESS_SIGNING_KEY`; sinon, elle est créée et conservée dans la base.
+
+Le développement local continue d’utiliser le stockage fichier dans `.private-access/`. Les comptes e-mail, crédits et paiements qui dépendaient de Supabase ne sont pas inclus dans cette migration; la connexion e-mail est désactivée sans configuration Supabase.
 
 ## Déployer
 
-Importez le dépôt dans Netlify. Définissez son répertoire de base sur le dossier contenant `package.json` et [`../netlify.toml`](../netlify.toml). Ce fichier configure Node.js 22, la commande `pnpm build` et le répertoire de publication Next.js. Ajoutez les variables serveur nécessaires dans **Site configuration → Environment variables**, puis lancez le déploiement.
+Importez le dépôt dans Netlify. Définissez son répertoire de base sur le dossier contenant `package.json` et [`../netlify.toml`](../netlify.toml). Ce fichier configure Node.js 22 et `pnpm build`. Les migrations sont appliquées automatiquement avec Netlify Database.
 
-Pour que les parties privées et l’accès membre fonctionnent, les variables essentielles sont :
-
-- `NEXT_PUBLIC_SUPABASE_URL` — l’URL complète `https://<project-ref>.supabase.co`, pas une valeur d’exemple ou un nom de projet
-- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `PRIVATE_ACCESS_SIGNING_KEY`
-- Les douze variables `PRIVATE_ACCESS_ADMIN_1_HASH`, `PRIVATE_ACCESS_ADMIN_2_HASH`, `PRIVATE_ACCESS_PLAYER_1_HASH` à `PRIVATE_ACCESS_PLAYER_8_HASH`, et `PRIVATE_ACCESS_RESERVE_1_HASH` / `PRIVATE_ACCESS_RESERVE_2_HASH`
-
-N’utilisez pas de fichier `.env` commité comme configuration de déploiement. Le fichier [`.env.example`](../.env.example) est un modèle, pas un fichier de configuration exécutable. Les fonctions d’IA, de synthèse vocale, d’authentification externe et de paiement nécessitent aussi leurs clés fournisseur respectives décrites dans ce modèle. Renseignez les vraies valeurs uniquement dans les paramètres Netlify.
+Les fonctions d’IA et de synthèse vocale utilisent toujours les clés fournisseur décrites dans [`.env.example`](../.env.example). Renseignez les vraies valeurs de fournisseur uniquement dans les paramètres Netlify; elles ne sont pas nécessaires pour ouvrir le site ou créer un salon.
 
 ## GitHub
 
-Avant de connecter Netlify, vérifiez que le dépôt GitHub contient le dossier du projet et ses migrations, mais aucun fichier `.env.local`, code d’accès en clair, clé privée ou fichier `.private-access`. Appliquez les migrations au projet Supabase de production avant d’ouvrir le site aux joueurs.
+Avant de connecter Netlify, vérifiez que le dépôt GitHub contient les migrations, mais aucun fichier `.env.local`, code d’accès en clair, clé privée ou fichier `.private-access`.

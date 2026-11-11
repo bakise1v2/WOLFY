@@ -4,8 +4,7 @@
     "description": "Play Werewolf with AI opponents online. A single-player social deduction game with classic roles, AI players that bluff and reason, optional voice acting, and no download."
   },
   "deploymentConfig": {
-    "supabaseTitle": "The site needs a valid Supabase configuration",
-    "supabaseDescription": "In Netlify, set the Supabase project URL to a valid HTTPS URL (for example, https://your-project.supabase.co) and add the matching public key. Add the service-role key as a server-only variable, then redeploy."
+    "supabaseDescription": "Email sign-in is unavailable on this site. Use your private access code to continue."
   },
   "locale": {
     "label": "Language",

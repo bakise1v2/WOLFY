@@ -8,6 +8,7 @@ import {
 } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { getNetlifyDatabasePool } from "@/lib/netlify-database";
 
 export const PRIVATE_ACCESS_COOKIE = "wolfcha_private_access";
 
@@ -79,11 +80,11 @@ function getInitialProfiles(): AccessProfile[] {
     if (hash) configuredHashes.set(id, hash.trim());
   }
   if (
-    process.env.NODE_ENV === "production" &&
+    configuredHashes.size > 0 &&
     (configuredHashes.size !== defaultProfiles.length ||
       [...configuredHashes.values()].some((hash) => !/^[a-f0-9]{64}$/i.test(hash)))
   ) {
-    throw new Error("All 12 PRIVATE_ACCESS_*_HASH values must be configured as SHA-256 hashes in production.");
+    throw new Error("Configure all 12 PRIVATE_ACCESS_*_HASH values as SHA-256 hashes, or leave them all unset.");
   }
   const useEnvironment = configuredHashes.size === defaultProfiles.length;
 
@@ -98,43 +99,46 @@ function usesFileAccessStore() {
   return process.env.NODE_ENV !== "production";
 }
 
-async function getDatabaseClient() {
-  const { ensureAdminClient, supabaseAdmin } = await import("@/lib/supabase-admin");
-  ensureAdminClient();
-  return supabaseAdmin;
-}
-
 async function readDatabaseProfiles(): Promise<AccessProfile[]> {
-  const supabase = await getDatabaseClient();
-  const { data, error } = await supabase
-    .from("private_access_profiles")
-    .select("id, label, role, code_hash, active, notes")
-    .order("id", { ascending: true });
-  if (error) throw error;
+  const pool = getNetlifyDatabasePool();
+  const { rows } = await pool.query<{
+    id: string;
+    label: string;
+    role: AccessRole;
+    code_hash: string;
+    active: boolean;
+    notes: string | null;
+  }>(
+    `select id, label, role, code_hash, active, notes
+     from private_access_profiles
+     order by id`,
+  );
 
-  if (!data?.length) {
+  if (!rows.length) {
     const initialProfiles = getInitialProfiles();
-    const { error: seedError } = await supabase
-      .from("private_access_profiles")
-      .upsert(
-        initialProfiles.map(({ id, label, role, hash, active, notes }) => ({
-          id,
-          label,
-          role,
-          code_hash: hash,
-          active,
-          notes: notes ?? null,
-        })),
-        { onConflict: "id", ignoreDuplicates: true },
-      );
-    if (seedError) throw seedError;
+    await pool.query(
+      `insert into private_access_profiles (id, label, role, code_hash, active, notes)
+       select seed.id, seed.label, seed.role, seed.code_hash, seed.active, seed.notes
+       from jsonb_to_recordset($1::jsonb) as seed(
+         id text, label text, role text, code_hash text, active boolean, notes text
+       )
+       on conflict (id) do nothing`,
+      [JSON.stringify(initialProfiles.map(({ id, label, role, hash, active, notes }) => ({
+        id,
+        label,
+        role,
+        code_hash: hash,
+        active,
+        notes: notes ?? null,
+      })))],
+    );
     return readDatabaseProfiles();
   }
 
-  if (data.length !== defaultProfiles.length) {
-    throw new Error(`Private access profile store has ${data.length} profiles; expected ${defaultProfiles.length}.`);
+  if (rows.length !== defaultProfiles.length) {
+    throw new Error(`Private access profile store has ${rows.length} profiles; expected ${defaultProfiles.length}.`);
   }
-  return data.map(({ id, label, role, code_hash, active, notes }) => ({
+  return rows.map(({ id, label, role, code_hash, active, notes }) => ({
     id,
     label,
     role,
@@ -189,11 +193,51 @@ let writeQueue: Promise<void> = Promise.resolve();
 async function updateProfiles(
   update: (profiles: AccessProfile[]) => void
 ): Promise<AccessProfile[]> {
+  if (!usesFileAccessStore()) {
+    const pool = getNetlifyDatabasePool();
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const { rows } = await client.query<{
+        id: string;
+        label: string;
+        role: AccessRole;
+        code_hash: string;
+        active: boolean;
+        notes: string | null;
+      }>(
+        `select id, label, role, code_hash, active, notes
+         from private_access_profiles
+         order by id
+         for update`,
+      );
+      if (rows.length !== defaultProfiles.length) {
+        throw new Error("Comptes privés non initialisés.");
+      }
+      const profiles = rows.map(({ id, label, role, code_hash, active, notes }) => ({
+        id, label, role, hash: code_hash, active, notes: notes ?? undefined,
+      }));
+      update(profiles);
+      for (const profile of profiles) {
+        await client.query(
+          `update private_access_profiles
+           set code_hash = $2, active = $3, updated_at = now()
+           where id = $1`,
+          [profile.id, profile.hash, profile.active],
+        );
+      }
+      await client.query("commit");
+      return profiles;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   let result: AccessProfile[] = [];
   const operation = writeQueue.then(async () => {
-    if (!usesFileAccessStore()) {
-      throw new Error("Database access profile updates must use the atomic database function.");
-    }
     const profiles = await readFileProfiles();
     update(profiles);
     await writeFileProfiles(profiles);
@@ -207,10 +251,24 @@ async function updateProfiles(
 async function getSigningKey(): Promise<Buffer> {
   if (!usesFileAccessStore()) {
     const signingKey = process.env.PRIVATE_ACCESS_SIGNING_KEY;
-    if (!signingKey || Buffer.byteLength(signingKey, "utf8") < 32) {
-      throw new Error("PRIVATE_ACCESS_SIGNING_KEY must contain at least 32 characters in production.");
+    if (signingKey && Buffer.byteLength(signingKey, "utf8") >= 32) {
+      return Buffer.from(signingKey, "utf8");
     }
-    return Buffer.from(signingKey, "utf8");
+    const pool = getNetlifyDatabasePool();
+    const generatedKey = randomBytes(32).toString("base64url");
+    await pool.query(
+      `insert into private_app_settings (key, value)
+       values ('private_access_signing_key', $1)
+       on conflict (key) do nothing`,
+      [generatedKey],
+    );
+    const { rows } = await pool.query<{ value: string }>(
+      `select value from private_app_settings where key = 'private_access_signing_key'`,
+    );
+    if (!rows[0]?.value || Buffer.byteLength(rows[0].value, "utf8") < 32) {
+      throw new Error("La clé de signature des sessions n’a pas pu être initialisée.");
+    }
+    return Buffer.from(rows[0].value, "utf8");
   }
 
   const keyPath = getSigningKeyPath();
@@ -280,16 +338,6 @@ export async function verifyPrivateAccessCode(
 export async function rotatePrivateAccessCode(profileId: string): Promise<string> {
   const code = `WOLF-${randomBytes(18).toString("base64url").toUpperCase()}`;
   const hash = await hashCode(code);
-  if (!usesFileAccessStore()) {
-    const supabase = await getDatabaseClient();
-    const { error } = await supabase.rpc("private_access_update_profile", {
-      p_profile_id: profileId,
-      p_code_hash: hash,
-      p_active: true,
-    });
-    if (error) throw new Error(error.message);
-    return code;
-  }
   await updateProfiles((profiles) => {
     const profile = profiles.find((entry) => entry.id === profileId);
     if (!profile) throw new Error("Compte introuvable");
@@ -300,16 +348,6 @@ export async function rotatePrivateAccessCode(profileId: string): Promise<string
 }
 
 export async function setPrivateAccessActive(profileId: string, active: boolean): Promise<void> {
-  if (!usesFileAccessStore()) {
-    const supabase = await getDatabaseClient();
-    const { error } = await supabase.rpc("private_access_update_profile", {
-      p_profile_id: profileId,
-      p_code_hash: null,
-      p_active: active,
-    });
-    if (error) throw new Error(error.message);
-    return;
-  }
   await updateProfiles((profiles) => {
     const profile = profiles.find((entry) => entry.id === profileId);
     if (!profile) throw new Error("Compte introuvable");

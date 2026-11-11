@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { supabase } from "@/lib/supabase";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -260,6 +260,7 @@ export function AuthModal({ open, onOpenChange }: AuthModalProps) {
           <DialogDescription>{t("authModal.description")}</DialogDescription>
         </DialogHeader>
 
+        {isSupabaseConfigured() ? (
         <div className="pt-4">
           {/* OAuth 登录 */}
           {passwordView === "sign_in" && (
@@ -492,6 +493,11 @@ export function AuthModal({ open, onOpenChange }: AuthModalProps) {
               </form>
             )}
         </div>
+        ) : (
+          <p className="pt-4 text-sm text-[var(--text-muted)]">
+            {t("deploymentConfig.supabaseDescription")}
+          </p>
+        )}
       </DialogContent>
     </Dialog>
   );

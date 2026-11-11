@@ -3,6 +3,7 @@ import "server-only";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { getNetlifyDatabasePool } from "@/lib/netlify-database";
 
 export type PrivateGameParticipant = {
   room_id: string;
@@ -55,15 +56,62 @@ function getStorePath() {
 }
 
 export function shouldUseLocalPrivateGameStorage() {
-  if (process.env.NODE_ENV !== "development") return false;
-  const configuredUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!configuredUrl) return true;
-  try {
-    const hostname = new URL(configuredUrl).hostname;
-    return hostname === "example.supabase.co" || hostname.endsWith(".example.com");
-  } catch {
-    return true;
+  return process.env.NODE_ENV !== "production";
+}
+
+async function getDatabaseRoom(roomId: string): Promise<PrivateGameRoom | null> {
+  const pool = getNetlifyDatabasePool();
+  const { rows: roomRows } = await pool.query<Omit<PrivateGameRoom, "participants">>(
+    `select id, code, status, created_at, created_by, game_state, revision
+     from private_game_rooms
+     where id = $1`,
+    [roomId],
+  );
+  const room = roomRows[0];
+  if (!room) return null;
+  const { rows: participants } = await pool.query<PrivateGameParticipant>(
+    `select room_id, user_id, pseudo, role, joined_at
+     from private_game_participants
+     where room_id = $1
+     order by joined_at`,
+    [roomId],
+  );
+  return { ...room, participants };
+}
+
+async function listDatabaseRooms(where?: { userId: string }): Promise<PrivateGameRoom[]> {
+  const pool = getNetlifyDatabasePool();
+  const { rows: rooms } = where
+    ? await pool.query<Omit<PrivateGameRoom, "participants">>(
+        `select r.id, r.code, r.status, r.created_at, r.created_by, r.game_state, r.revision
+         from private_game_rooms r
+         where exists (
+           select 1 from private_game_participants p
+           where p.room_id = r.id and p.user_id = $1
+         )
+         order by r.created_at desc`,
+        [where.userId],
+      )
+    : await pool.query<Omit<PrivateGameRoom, "participants">>(
+        `select id, code, status, created_at, created_by, game_state, revision
+         from private_game_rooms
+         order by created_at desc`,
+      );
+  if (!rooms.length) return [];
+  const { rows: participants } = await pool.query<PrivateGameParticipant>(
+    `select room_id, user_id, pseudo, role, joined_at
+     from private_game_participants
+     where room_id = any($1::text[])
+     order by joined_at`,
+    [rooms.map((room) => room.id)],
+  );
+  const byRoom = new Map<string, PrivateGameParticipant[]>();
+  for (const participant of participants) {
+    const list = byRoom.get(participant.room_id) ?? [];
+    list.push(participant);
+    byRoom.set(participant.room_id, list);
   }
+  return rooms.map((room) => ({ ...room, participants: byRoom.get(room.id) ?? [] }));
 }
 
 async function readStore(): Promise<StoreData> {
@@ -104,16 +152,53 @@ async function updateStore(
 }
 
 export async function listLocalPrivateRoomsForAdmin() {
+  if (!shouldUseLocalPrivateGameStorage()) return listDatabaseRooms();
   return (await readStore()).rooms;
 }
 
 export async function listLocalPrivateRoomsForMember(userId: string) {
+  if (!shouldUseLocalPrivateGameStorage()) return listDatabaseRooms({ userId });
   return (await readStore()).rooms.filter((room) =>
     room.participants.some((participant) => participant.user_id === userId)
   );
 }
 
 export async function createLocalPrivateRoom(code: string, userId: string, pseudo: string) {
+  if (!shouldUseLocalPrivateGameStorage()) {
+    const pool = getNetlifyDatabasePool();
+    const client = await pool.connect();
+    const id = randomBytes(16).toString("hex");
+    const joinedAt = new Date().toISOString();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into private_game_rooms (id, code, created_by)
+         values ($1, $2, $3)`,
+        [id, code, userId],
+      );
+      await client.query(
+        `insert into private_game_participants (room_id, user_id, pseudo, role, joined_at)
+         values ($1, $2, $3, 'admin', $4)`,
+        [id, userId, pseudo, joinedAt],
+      );
+      await client.query("commit");
+      return {
+        id,
+        code,
+        status: "waiting" as const,
+        created_at: new Date().toISOString(),
+        created_by: userId,
+        revision: 0,
+        participants: [{ room_id: id, user_id: userId, pseudo, role: "admin" as const, joined_at: joinedAt }],
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   let created: PrivateGameRoom | undefined;
   await updateStore((store) => {
     created = {
@@ -139,6 +224,7 @@ export async function createLocalPrivateRoom(code: string, userId: string, pseud
 }
 
 export async function getLocalPrivateRoom(roomId: string) {
+  if (!shouldUseLocalPrivateGameStorage()) return getDatabaseRoom(roomId);
   return (await readStore()).rooms.find((room) => room.id === roomId) ?? null;
 }
 
@@ -146,6 +232,50 @@ export async function updateLocalPrivateRoom(
   roomId: string,
   update: (room: PrivateGameRoom) => void
 ) {
+  if (!shouldUseLocalPrivateGameStorage()) {
+    const pool = getNetlifyDatabasePool();
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const { rows } = await client.query<Omit<PrivateGameRoom, "participants">>(
+        `select id, code, status, created_at, created_by, game_state, revision
+         from private_game_rooms
+         where id = $1
+         for update`,
+        [roomId],
+      );
+      const existing = rows[0];
+      if (!existing) {
+        await client.query("commit");
+        return null;
+      }
+      const { rows: participants } = await client.query<PrivateGameParticipant>(
+        `select room_id, user_id, pseudo, role, joined_at
+         from private_game_participants
+         where room_id = $1
+         order by joined_at`,
+        [roomId],
+      );
+      const room: PrivateGameRoom = { ...existing, participants };
+      update(room);
+      room.revision = (room.revision ?? 0) + 1;
+      const { rows: updated } = await client.query<Omit<PrivateGameRoom, "participants">>(
+        `update private_game_rooms
+         set status = $2, game_state = $3, revision = $4
+         where id = $1
+         returning id, code, status, created_at, created_by, game_state, revision`,
+        [roomId, room.status, room.game_state ?? null, room.revision],
+      );
+      await client.query("commit");
+      return { ...updated[0], participants };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   let updatedRoom: PrivateGameRoom | null = null;
   await updateStore((store) => {
     const room = store.rooms.find((entry) => entry.id === roomId);
@@ -158,6 +288,14 @@ export async function updateLocalPrivateRoom(
 }
 
 export async function getLocalPrivateRoomByCode(code: string) {
+  if (!shouldUseLocalPrivateGameStorage()) {
+    const pool = getNetlifyDatabasePool();
+    const { rows } = await pool.query<{ id: string }>(
+      `select id from private_game_rooms where code = $1`,
+      [code],
+    );
+    return rows[0] ? getDatabaseRoom(rows[0].id) : null;
+  }
   return (await readStore()).rooms.find((room) => room.code === code) ?? null;
 }
 
@@ -165,6 +303,53 @@ export async function joinLocalPrivateRoom(
   code: string,
   participant: Omit<PrivateGameParticipant, "room_id" | "joined_at">
 ) {
+  if (!shouldUseLocalPrivateGameStorage()) {
+    const pool = getNetlifyDatabasePool();
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const { rows } = await client.query<{ id: string; status: string }>(
+        `select id, status from private_game_rooms where code = $1 for update`,
+        [code],
+      );
+      const room = rows[0];
+      if (!room || room.status !== "waiting") {
+        await client.query("commit");
+        return null;
+      }
+      const { rows: existing } = await client.query(
+        `select user_id from private_game_participants
+         where room_id = $1 and user_id = $2`,
+        [room.id, participant.user_id],
+      );
+      if (!existing.length) {
+        const { rows: countRows } = await client.query<{ count: string }>(
+          `select count(*)::text as count from private_game_participants where room_id = $1`,
+          [room.id],
+        );
+        if (Number(countRows[0]?.count ?? 0) >= 10) {
+          await client.query("commit");
+          return null;
+        }
+      }
+      await client.query(
+        `insert into private_game_participants (room_id, user_id, pseudo, role)
+         values ($1, $2, $3, $4)
+         on conflict (room_id, user_id)
+         do update set pseudo = excluded.pseudo, role = excluded.role`,
+        [room.id, participant.user_id, participant.pseudo, participant.role],
+      );
+      await client.query("update private_game_rooms set revision = revision + 1 where id = $1", [room.id]);
+      await client.query("commit");
+      return getDatabaseRoom(room.id);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   let joinedRoom: PrivateGameRoom | undefined;
   await updateStore((store) => {
     const room = store.rooms.find((entry) => entry.code === code);
