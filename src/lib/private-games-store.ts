@@ -10,7 +10,7 @@ export type PrivateGameParticipant = {
   user_id: string;
   pseudo: string;
   role: "admin" | "player" | "reserve";
-  joined_at: string;
+  joined_at: string | Date;
 };
 
 export type PrivateGameRoom = {

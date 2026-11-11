@@ -9,6 +9,7 @@ import {
   joinLocalPrivateRoom,
   updateLocalPrivateRoom,
 } from "./private-games-store";
+import { applyPrivateGameAction, createPrivateGameState } from "./private-game-engine";
 
 let storageDirectory: string;
 const previousStorageDirectory = process.env.PRIVATE_ACCESS_DATA_DIR;
@@ -43,4 +44,38 @@ test("private rooms and participants persist in the local development store", as
   });
   assert.equal(updated?.revision, 1);
   assert.equal((await getLocalPrivateRoom(room.id))?.status, "running");
+});
+
+test("simultaneous player actions are applied to the latest room state", async () => {
+  const room = await createLocalPrivateRoom("B1B2C3D4E5F60708", "admin-1", "Admin");
+  for (let index = 1; index < 5; index += 1) {
+    await joinLocalPrivateRoom(room.code, {
+      user_id: `player-${index}`,
+      pseudo: `Joueur ${index}`,
+      role: "player",
+    });
+  }
+
+  const participants = (await getLocalPrivateRoom(room.id))?.participants;
+  assert.ok(participants);
+  const game = { ...createPrivateGameState(participants), phase: "day_vote" as const };
+  await updateLocalPrivateRoom(room.id, (current) => {
+    current.status = "running";
+    current.game_state = game;
+  });
+
+  const targets = game.players.filter((player) => player.user_id !== "admin-1" && player.user_id !== "player-1");
+  await Promise.all(["admin-1", "player-1"].map((userId, index) =>
+    updateLocalPrivateRoom(room.id, (current) => {
+      assert.ok(current.game_state);
+      current.game_state = applyPrivateGameAction(current.game_state, userId, {
+        type: "vote",
+        targetSeat: targets[index].seat,
+      });
+    })
+  ));
+
+  const finalRoom = await getLocalPrivateRoom(room.id);
+  assert.equal(finalRoom?.game_state?.votes["admin-1"], targets[0].seat);
+  assert.equal(finalRoom?.game_state?.votes["player-1"], targets[1].seat);
 });

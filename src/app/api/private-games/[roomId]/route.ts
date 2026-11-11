@@ -19,7 +19,11 @@ import {
 
 type RouteContext = { params: Promise<{ roomId: string }> };
 
-class PrivateGameConflictError extends Error {}
+class PrivateGameRequestError extends Error {
+  constructor(message: string, readonly status: 400 | 403 | 409) {
+    super(message);
+  }
+}
 
 async function getAccessSession() {
   const cookieStore = await cookies();
@@ -123,37 +127,34 @@ export async function POST(request: Request, context: RouteContext) {
   if (!action) return NextResponse.json({ error: "Action invalide." }, { status: 400 });
 
   try {
-    const room = await getLocalPrivateRoom(roomId);
-    if (!room) return NextResponse.json({ error: "Salon introuvable." }, { status: 404 });
-    if (!room.participants.some((participant) => participant.user_id === session.userId)) {
-      return NextResponse.json({ error: "Tu ne fais pas partie de ce salon." }, { status: 403 });
-    }
-    if (room.status !== "running" || !isPrivateGameState(room.game_state)) {
-      return NextResponse.json({ error: "La partie n’a pas encore commencé." }, { status: 409 });
-    }
-
-    let nextState: PrivateGameState;
-    try {
-      nextState = advancePrivateGameTestAIs(
-        applyPrivateGameAction(room.game_state, session.userId, action),
-      );
-    } catch (error) {
-      return NextResponse.json({
-        error: error instanceof Error ? error.message : "Action impossible.",
-      }, { status: 400 });
-    }
+    let nextState: PrivateGameState | null = null;
     const updated = await updateLocalPrivateRoom(roomId, (current) => {
-      if (current.revision !== room.revision) {
-        throw new PrivateGameConflictError("La partie a été modifiée. Actualise puis réessaie.");
+      if (!current.participants.some((participant) => participant.user_id === session.userId)) {
+        throw new PrivateGameRequestError("Tu ne fais pas partie de ce salon.", 403);
+      }
+      if (current.status !== "running" || !isPrivateGameState(current.game_state)) {
+        throw new PrivateGameRequestError("La partie n’a pas encore commencé.", 409);
+      }
+
+      try {
+        nextState = advancePrivateGameTestAIs(
+          applyPrivateGameAction(current.game_state, session.userId, action),
+        );
+      } catch (error) {
+        throw new PrivateGameRequestError(
+          error instanceof Error ? error.message : "Action impossible.",
+          409,
+        );
       }
       current.game_state = nextState;
       if (nextState.phase === "ended") current.status = "completed";
     });
     if (!updated) return NextResponse.json({ error: "Salon introuvable." }, { status: 404 });
+    if (!nextState) throw new Error("L’action n’a pas produit de nouvel état de partie.");
     return NextResponse.json({ game: createPublicPrivateGameSnapshot(nextState, session.userId) });
   } catch (error) {
-    if (error instanceof PrivateGameConflictError) {
-      return NextResponse.json({ error: error.message }, { status: 409 });
+    if (error instanceof PrivateGameRequestError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
     }
     console.error("[private-games] action failed", error);
     return NextResponse.json({ error: "Impossible d’enregistrer cette action." }, { status: 500 });

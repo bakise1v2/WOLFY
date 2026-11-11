@@ -16,6 +16,10 @@ export type PrivateGameAction =
 
 type RuntimePlayer = PrivateGameState["players"][number];
 
+function getJoinedAtTimestamp(value: string | Date) {
+  return value instanceof Date ? value.getTime() : Date.parse(value);
+}
+
 export function canStartPrivateGame(participants: PrivateGameParticipant[]) {
   return participants.length >= 5 && participants.length <= 10;
 }
@@ -31,7 +35,7 @@ export function createPrivateGameState(participants: PrivateGameParticipant[]): 
   }
 
   const players = [...participants]
-    .sort((left, right) => left.joined_at.localeCompare(right.joined_at))
+    .sort((left, right) => getJoinedAtTimestamp(left.joined_at) - getJoinedAtTimestamp(right.joined_at))
     .map((participant, seat) => ({
       ...participant,
       seat,

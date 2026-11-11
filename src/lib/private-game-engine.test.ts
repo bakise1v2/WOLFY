@@ -17,7 +17,7 @@ function makeParticipants(count: number): PrivateGameParticipant[] {
     user_id: `player-${index + 1}`,
     pseudo: `Joueur ${index + 1}`,
     role: index === 0 ? "admin" : "player",
-    joined_at: new Date(1_000 + index).toISOString(),
+    joined_at: new Date(1_000 + index),
   }));
 }
 
