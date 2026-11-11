@@ -57,6 +57,116 @@ export function createPrivateGameState(participants: PrivateGameParticipant[]): 
   };
 }
 
+export function createPrivateGameTestState(participants: PrivateGameParticipant[]): PrivateGameState {
+  if (participants.length < 1 || participants.length > 10) {
+    throw new Error("Le mode test nécessite entre 1 et 10 joueurs inscrits.");
+  }
+  const testParticipants = [...participants];
+  const aiCount = Math.max(0, 5 - testParticipants.length);
+  for (let index = 0; index < aiCount; index += 1) {
+    const userId = `private-test-ai-${index + 1}`;
+    testParticipants.push({
+      room_id: participants[0].room_id,
+      user_id: userId,
+      pseudo: `IA test ${index + 1}`,
+      role: "player",
+      joined_at: new Date(Date.now() + index + 1).toISOString(),
+    });
+  }
+  return { ...createPrivateGameState(testParticipants), testMode: true };
+}
+
+function isTestAI(userId: string) {
+  return userId.startsWith("private-test-ai-");
+}
+
+export function advancePrivateGameTestAIs(initialState: PrivateGameState): PrivateGameState {
+  if (!initialState.testMode) return initialState;
+  let state = initialState;
+  for (let actionCount = 0; actionCount < 100 && state.phase !== "ended"; actionCount += 1) {
+    const alive = activePlayers(state);
+    if (state.phase === "night_wolf") {
+      const wolf = livingWolves(state).find((player) => isTestAI(player.user_id) && !state.nightActions[player.user_id]);
+      if (wolf) {
+        const targets = alive
+          .filter((player) => !isWolfRole(player.game_role))
+          .sort((left, right) => Number(!isTestAI(left.user_id)) - Number(!isTestAI(right.user_id)));
+        if (targets.length) {
+          state = applyPrivateGameAction(state, wolf.user_id, { type: "wolf_vote", targetSeat: targets[0].seat });
+          continue;
+        }
+      }
+      break;
+    }
+
+    if (state.phase === "night_guard") {
+      const guard = livingWithRole(state, "Guard").find((player) => isTestAI(player.user_id) && !state.nightActions[player.user_id]);
+      if (guard) {
+        const target = alive.find((player) => player.seat !== state.lastGuardTarget);
+        state = applyPrivateGameAction(state, guard.user_id, { type: "guard", targetSeat: target?.seat ?? null });
+        continue;
+      }
+      break;
+    }
+
+    if (state.phase === "night_witch") {
+      const witch = livingWithRole(state, "Witch").find((player) => isTestAI(player.user_id) && !state.nightActions[player.user_id]);
+      if (witch) {
+        state = applyPrivateGameAction(state, witch.user_id, { type: "witch", save: false, poisonSeat: null });
+        continue;
+      }
+      break;
+    }
+
+    if (state.phase === "night_seer") {
+      const seer = livingWithRole(state, "Seer").find((player) => isTestAI(player.user_id) && !state.nightActions[player.user_id]);
+      if (seer) {
+        const target = alive.find((player) => player.user_id !== seer.user_id);
+        if (target) {
+          state = applyPrivateGameAction(state, seer.user_id, { type: "seer", targetSeat: target.seat });
+          continue;
+        }
+      }
+      break;
+    }
+
+    if (state.phase === "day_speech") {
+      const speakerId = state.speechOrder[state.speechIndex];
+      if (speakerId && isTestAI(speakerId)) {
+        state = applyPrivateGameAction(state, speakerId, {
+          type: "speech",
+          content: `IA de test : j'observe les votes du jour ${state.day} et je garde mes soupçons ouverts.`,
+        });
+        continue;
+      }
+      break;
+    }
+
+    if (state.phase === "day_vote") {
+      const voter = alive.find((player) => isTestAI(player.user_id) && typeof state.votes[player.user_id] !== "number");
+      if (voter) {
+        const target = alive.find((player) => player.user_id !== voter.user_id);
+        if (target) {
+          state = applyPrivateGameAction(state, voter.user_id, { type: "vote", targetSeat: target.seat });
+          continue;
+        }
+      }
+      break;
+    }
+
+    if (state.phase === "hunter") {
+      const hunter = state.players.find((player) => player.game_role === "Hunter" && isTestAI(player.user_id));
+      if (hunter && state.hunterTarget === null) {
+        const target = alive.find((player) => player.user_id !== hunter.user_id);
+        state = applyPrivateGameAction(state, hunter.user_id, { type: "hunter", targetSeat: target?.seat ?? null });
+        continue;
+      }
+      break;
+    }
+  }
+  return state;
+}
+
 function requirePlayer(
   state: PrivateGameState,
   userId: string,
@@ -341,6 +451,7 @@ export function createPublicPrivateGameSnapshot(state: PrivateGameState, viewerI
   return {
     day: state.day,
     phase: state.phase,
+    testMode: state.testMode === true,
     players: state.players.map((player) => ({
       user_id: player.user_id,
       pseudo: player.pseudo,

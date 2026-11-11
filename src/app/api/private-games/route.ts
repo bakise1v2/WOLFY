@@ -14,7 +14,12 @@ import {
   updateLocalPrivateRoom,
   type PrivateGameRoom,
 } from "@/lib/private-games-store";
-import { canStartPrivateGame, createPrivateGameState } from "@/lib/private-game-engine";
+import {
+  advancePrivateGameTestAIs,
+  canStartPrivateGame,
+  createPrivateGameState,
+  createPrivateGameTestState,
+} from "@/lib/private-game-engine";
 
 class PrivateGameConflictError extends Error {}
 
@@ -92,7 +97,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ room }, { status: 201 });
     }
 
-    if (body.action === "start") {
+    if (body.action === "start" || body.action === "test") {
       if (session.role !== "admin" || typeof body.code !== "string") {
         return NextResponse.json({ error: "Action réservée à l’administrateur du salon." }, { status: 403 });
       }
@@ -104,19 +109,29 @@ export async function POST(request: Request) {
       if (room.status !== "waiting") {
         return NextResponse.json({ error: "Cette partie a déjà été lancée." }, { status: 409 });
       }
-      if (!canStartPrivateGame(room.participants)) {
+      const testMode = body.action === "test";
+      if (!testMode && !canStartPrivateGame(room.participants)) {
         return NextResponse.json({ error: "Il faut entre 5 et 10 joueurs inscrits pour lancer la partie." }, { status: 400 });
+      }
+      if (testMode && (room.participants.length < 1 || room.participants.length > 10)) {
+        return NextResponse.json({ error: "Le test nécessite entre 1 et 10 joueurs inscrits." }, { status: 400 });
       }
 
       const started = await updateLocalPrivateRoom(room.id, (current) => {
         if (current.status !== "waiting") {
           throw new PrivateGameConflictError("Cette partie a déjà été lancée.");
         }
-        if (!canStartPrivateGame(current.participants)) {
+        if (testMode && (current.participants.length < 1 || current.participants.length > 10)) {
+          throw new PrivateGameConflictError("Le nombre de joueurs a changé. Actualise puis réessaie.");
+        }
+        if (!testMode && !canStartPrivateGame(current.participants)) {
           throw new PrivateGameConflictError("Le nombre de joueurs a changé. Actualise puis réessaie.");
         }
         current.status = "running";
-        current.game_state = createPrivateGameState(current.participants);
+        current.game_state = testMode
+          ? advancePrivateGameTestAIs(createPrivateGameTestState(current.participants))
+          : createPrivateGameState(current.participants);
+        if (current.game_state.phase === "ended") current.status = "completed";
       });
       if (!started) return NextResponse.json({ error: "Salon introuvable." }, { status: 404 });
       return NextResponse.json({ ok: true, roomId: room.id });

@@ -11,6 +11,7 @@ import {
   type PrivateGameState,
 } from "@/lib/private-games-store";
 import {
+  advancePrivateGameTestAIs,
   applyPrivateGameAction,
   createPublicPrivateGameSnapshot,
   type PrivateGameAction,
@@ -133,7 +134,9 @@ export async function POST(request: Request, context: RouteContext) {
 
     let nextState: PrivateGameState;
     try {
-      nextState = applyPrivateGameAction(room.game_state, session.userId, action);
+      nextState = advancePrivateGameTestAIs(
+        applyPrivateGameAction(room.game_state, session.userId, action),
+      );
     } catch (error) {
       return NextResponse.json({
         error: error instanceof Error ? error.message : "Action impossible.",

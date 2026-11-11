@@ -46,6 +46,7 @@ export type PrivateGameState = {
   lastGuardTarget: number | null;
   hunterTarget: number | null;
   winner: "village" | "wolf" | null;
+  testMode?: boolean;
 };
 
 type StoreData = { rooms: PrivateGameRoom[] };

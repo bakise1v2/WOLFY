@@ -235,14 +235,14 @@ export function AdminPrivateGames() {
     }
   };
 
-  const startRoom = async (room: PrivateGameRoom) => {
+  const startRoom = async (room: PrivateGameRoom, testWithAI = false) => {
     setStartingRoomId(room.id);
     setError(null);
     try {
       const response = await fetch("/api/private-games", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start", code: room.code }),
+        body: JSON.stringify({ action: testWithAI ? "test" : "start", code: room.code }),
       });
       const payload = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Impossible de lancer la partie.");
@@ -295,15 +295,26 @@ export function AdminPrivateGames() {
                     {copiedCode === room.code ? "Copié" : "Copier le code"}
                   </button>
                   {room.status === "waiting" && (
-                    <button
-                      type="button"
-                      disabled={startingRoomId !== null || room.participants.length < 5}
-                      onClick={() => void startRoom(room)}
-                      title={room.participants.length < 5 ? "Il faut au moins 5 joueurs inscrits." : undefined}
-                      className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {startingRoomId === room.id ? "Lancement…" : `Lancer (${room.participants.length}/5)`}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        disabled={startingRoomId !== null || room.participants.length < 5}
+                        onClick={() => void startRoom(room)}
+                        title={room.participants.length < 5 ? "Il faut au moins 5 joueurs inscrits." : undefined}
+                        className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {startingRoomId === room.id ? "Lancement…" : `Lancer (${room.participants.length}/5)`}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={startingRoomId !== null || room.participants.length > 10}
+                        onClick={() => void startRoom(room, true)}
+                        title="Complète la partie avec des IA simulées pour tester le jeu."
+                        className="rounded-lg border border-sky-500/50 px-3 py-2 text-sm font-medium text-sky-200 hover:bg-sky-900/40 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {startingRoomId === room.id ? "Lancement…" : `Tester avec des IA (${room.participants.length}/5)`}
+                      </button>
+                    </>
                   )}
                   {room.status !== "waiting" && (
                     <a href={`/private-game/${room.id}`} className="rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-500">
@@ -324,7 +335,7 @@ export function AdminPrivateGames() {
           ))}
         </div>
       )}
-      <p className="mt-4 text-xs text-slate-500">L’administrateur est inscrit comme joueur. Il faut 5 à 10 membres, administrateurs compris, pour lancer la partie.</p>
+      <p className="mt-4 text-xs text-slate-500">L’administrateur est inscrit comme joueur. Le lancement normal exige 5 à 10 membres. Le mode test complète avec des IA simulées sans appel à un service externe.</p>
     </section>
   );
 }

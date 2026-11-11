@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  advancePrivateGameTestAIs,
   applyPrivateGameAction,
   canStartPrivateGame,
+  createPrivateGameTestState,
   createPrivateGameState,
   createPublicPrivateGameSnapshot,
 } from "./private-game-engine";
@@ -83,4 +85,44 @@ test("night actions are private and proceed to a shared public speech round", ()
   assert.equal(next.phase, "day_vote");
   assert.equal(next.speeches.length, 7);
   assert.equal(createPublicPrivateGameSnapshot(next, seer.user_id).privateInfo.hasActed, false);
+});
+
+test("test mode fills a small room with simulated AIs and pauses for the human action", () => {
+  const state = createPrivateGameTestState(makeParticipants(1));
+  assert.equal(state.testMode, true);
+  assert.equal(state.players.length, 5);
+  assert.equal(state.players.filter((player) => player.user_id.startsWith("private-test-ai-")).length, 4);
+
+  const players = state.players.map((player) => ({
+    ...player,
+    game_role: player.user_id === "player-1"
+      ? "Seer"
+      : player.user_id === "private-test-ai-1"
+        ? "Werewolf"
+        : player.user_id === "private-test-ai-2"
+          ? "Witch"
+          : "Villager",
+  }));
+  const game = advancePrivateGameTestAIs({ ...state, players });
+  assert.equal(game.phase, "night_seer");
+  assert.equal(typeof game.nightActions["private-test-ai-1"]?.target, "number");
+  assert.equal(game.nightActions["private-test-ai-2"]?.save, false);
+  assert.equal(game.nightActions["player-1"], undefined);
+
+  const seerTarget = game.players.find((player) => player.alive && player.user_id !== "player-1");
+  assert.ok(seerTarget);
+  const afterVision = advancePrivateGameTestAIs(applyPrivateGameAction(game, "player-1", {
+    type: "seer",
+    targetSeat: seerTarget.seat,
+  }));
+  assert.equal(afterVision.phase, "day_speech");
+  assert.equal(afterVision.speechOrder[afterVision.speechIndex], "player-1");
+
+  const afterHumanSpeech = advancePrivateGameTestAIs(applyPrivateGameAction(afterVision, "player-1", {
+    type: "speech",
+    content: "Je teste la prise de parole.",
+  }));
+  assert.equal(afterHumanSpeech.phase, "day_vote");
+  assert.ok(afterHumanSpeech.speeches.some((speech) => speech.user_id.startsWith("private-test-ai-")));
+  assert.ok(Object.keys(afterHumanSpeech.votes).some((userId) => userId.startsWith("private-test-ai-")));
 });

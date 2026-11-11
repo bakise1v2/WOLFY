@@ -9,6 +9,7 @@ type GamePlayer = { user_id: string; pseudo: string; seat: number; alive: boolea
 type GameSnapshot = {
   day: number;
   phase: GamePhase;
+  testMode: boolean;
   players: GamePlayer[];
   speeches: Array<{ user_id: string; pseudo: string; content: string; day: number; created_at: string }>;
   speechTurnUserId: string | null;
@@ -157,6 +158,11 @@ export function PrivateGameTable({ roomId }: { roomId: string }) {
         ) : (
           <>
             <section className="mb-6 rounded-2xl border border-violet-500/30 bg-slate-900/80 p-5">
+              {game.testMode && (
+                <p className="mb-4 rounded-lg border border-sky-500/40 bg-sky-950/30 px-3 py-2 text-sm text-sky-200">
+                  Mode test : les IA simulées jouent automatiquement. Cette partie sert à vérifier les actions et les tours.
+                </p>
+              )}
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-sm text-slate-400">Jour {game.day}</p>
