@@ -1,5 +1,6 @@
 
-FROM node:20-alpine AS base
+FROM node:22-alpine AS base
+RUN npm install --global pnpm@12.18.0
 
 # Install dependencies only when needed
 FROM base AS deps
@@ -7,14 +8,8 @@ FROM base AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
-# Install dependencies based on the preferred package manager
-COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
-RUN \
-  if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
-  elif [ -f package-lock.json ]; then npm ci; \
-  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm i --frozen-lockfile; \
-  else echo "Lockfile not found." && exit 1; \
-  fi
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
 
 
 # Rebuild the source code only when needed
@@ -28,12 +23,7 @@ COPY . .
 # Uncomment the following line in case you want to disable telemetry during the build.
 # ENV NEXT_TELEMETRY_DISABLED 1
 
-RUN \
-  if [ -f yarn.lock ]; then yarn run build; \
-  elif [ -f package-lock.json ]; then npm run build; \
-  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm run build; \
-  else echo "Lockfile not found." && exit 1; \
-  fi
+RUN pnpm run build
 
 # Production image, copy all the files and run next
 FROM base AS runner
@@ -57,6 +47,8 @@ RUN chown nextjs:nodejs .next
 # https://nextjs.org/docs/advanced-features/output-file-tracing
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/migrate-private-game-storage.mjs ./scripts/
+COPY --from=builder --chown=nextjs:nodejs /app/netlify/database/migrations/20261111130000_private_game_storage.sql ./netlify/database/migrations/
 
 USER nextjs
 
@@ -66,4 +58,4 @@ ENV PORT=7860
 # set hostname to localhost
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["node", "server.js"]
+CMD ["sh", "-c", "node scripts/migrate-private-game-storage.mjs && exec node server.js"]

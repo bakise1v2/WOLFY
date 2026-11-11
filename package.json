@@ -16,6 +16,7 @@
     "test:zenmux": "NODE_OPTIONS=--conditions=react-server tsx --test server/zenmux-*.test.ts",
     "test:tokenpay": "NODE_OPTIONS=--conditions=react-server tsx --test server/tokenpay-*.test.ts",
     "migrate:game-sessions-user-id": "node scripts/migrate-game-sessions-user-id.mjs",
+    "migrate:private-game-storage": "node scripts/migrate-private-game-storage.mjs",
     "generate:private-access-codes": "node scripts/generate-private-access-codes.mjs"
   },
   "dependencies": {
