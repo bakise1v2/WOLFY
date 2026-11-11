@@ -15,13 +15,13 @@ Importez le dépôt dans Netlify. Définissez son répertoire de base sur le dos
 
 Pour que les parties privées et l’accès membre fonctionnent, les variables essentielles sont :
 
-- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_URL` — l’URL complète `https://<project-ref>.supabase.co`, pas une valeur d’exemple ou un nom de projet
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `PRIVATE_ACCESS_SIGNING_KEY`
 - Les douze variables `PRIVATE_ACCESS_ADMIN_1_HASH`, `PRIVATE_ACCESS_ADMIN_2_HASH`, `PRIVATE_ACCESS_PLAYER_1_HASH` à `PRIVATE_ACCESS_PLAYER_8_HASH`, et `PRIVATE_ACCESS_RESERVE_1_HASH` / `PRIVATE_ACCESS_RESERVE_2_HASH`
 
-Les fonctions d’IA, de synthèse vocale, d’authentification externe et de paiement nécessitent aussi leurs clés fournisseur respectives décrites dans [`.env.example`](../.env.example). La compilation n’inclut aucune valeur de secret : renseignez les vraies valeurs uniquement dans les paramètres Netlify.
+N’utilisez pas de fichier `.env` commité comme configuration de déploiement. Le fichier [`.env.example`](../.env.example) est un modèle, pas un fichier de configuration exécutable. Les fonctions d’IA, de synthèse vocale, d’authentification externe et de paiement nécessitent aussi leurs clés fournisseur respectives décrites dans ce modèle. Renseignez les vraies valeurs uniquement dans les paramètres Netlify.
 
 ## GitHub
 

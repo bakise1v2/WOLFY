@@ -16,7 +16,7 @@ import {
   setTokenPayConnected,
 } from "@/lib/api-keys";
 import { clearGuestId, getGuestId, readGuestIdFromStorage } from "@/lib/demo-mode";
-import { supabase } from "@/lib/supabase";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import {
   DAILY_BONUS_ENABLED,
   REFERRAL_BONUS_ENABLED,
@@ -485,6 +485,14 @@ export function useCredits() {
   }, [refreshDemoConfig]);
 
   useEffect(() => {
+    if (!isSupabaseConfigured()) {
+      setSession(null);
+      setUser(null);
+      setTokenPayConnected(false);
+      setLoading(false);
+      return;
+    }
+
     let active = true;
     const deferredAuthTasks = new Set<number>();
 

@@ -34,6 +34,7 @@ import { getSystemMessages, getSystemPatterns } from "@/lib/game-texts";
 import { useTranslations } from "next-intl";
 import { useAtom } from "jotai";
 import { BADGE_TRANSFER_TORN } from "@/lib/game-master";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
 // Components
 import { WelcomeScreen } from "@/components/game/WelcomeScreen";
@@ -1316,6 +1317,26 @@ export default function Home() {
 
   // 欢迎阶段：未开始游戏时显示欢迎屏
   const isWelcomeStage = !gameStarted;
+
+  if (!isSupabaseConfigured()) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-950 px-6 text-slate-100">
+        <section className="max-w-xl rounded-2xl border border-amber-500/40 bg-slate-900 p-8 shadow-xl">
+          <h1 className="text-xl font-semibold text-amber-200">
+            {t("deploymentConfig.supabaseTitle")}
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-slate-300">
+            {t("deploymentConfig.supabaseDescription")}
+          </p>
+          <ul className="mt-4 list-disc space-y-2 pl-5 text-sm text-slate-200">
+            <li>NEXT_PUBLIC_SUPABASE_URL</li>
+            <li>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY</li>
+            <li>SUPABASE_SERVICE_ROLE_KEY</li>
+          </ul>
+        </section>
+      </main>
+    );
+  }
 
   if (privateAccessLoading) {
     return (

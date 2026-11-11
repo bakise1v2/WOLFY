@@ -3,6 +3,10 @@
     "title": "Wolfcha - AI狼人杀｜一个人玩的在线狼人杀游戏",
     "description": "免费在线 AI 狼人杀游戏，一个人也能玩。全 AI 对手会发言、怀疑、带节奏和投票，支持经典角色与语音旁白，打开浏览器即可开始。"
   },
+  "deploymentConfig": {
+    "supabaseTitle": "网站需要有效的 Supabase 配置",
+    "supabaseDescription": "请在 Netlify 中设置有效的 HTTPS Supabase 项目 URL（例如 https://your-project.supabase.co）及对应的公开密钥。服务端密钥应仅作为服务器变量设置，然后重新部署。"
+  },
   "locale": {
     "label": "语言",
     "zh": "中文",

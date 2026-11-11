@@ -3,21 +3,39 @@ import type { Database } from "@/types/database";
 
 let client: SupabaseClient<Database> | undefined;
 
+function getSupabaseConfig() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  const supabaseAnonKey =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY?.trim();
+
+  if (!supabaseUrl || !supabaseAnonKey) return null;
+
+  try {
+    const url = new URL(supabaseUrl);
+    if (!["http:", "https:"].includes(url.protocol) || !url.hostname) return null;
+  } catch {
+    return null;
+  }
+
+  return { supabaseUrl, supabaseAnonKey };
+}
+
+export function isSupabaseConfigured() {
+  return getSupabaseConfig() !== null;
+}
+
 function getSupabaseClient() {
   if (client) return client;
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
-
-  if (!supabaseUrl || !supabaseAnonKey) {
+  const config = getSupabaseConfig();
+  if (!config) {
     throw new Error(
-      "Missing Supabase env vars: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY (or NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY)"
+      "Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL to a valid HTTP(S) URL and configure NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY (or NEXT_PUBLIC_SUPABASE_ANON_KEY)."
     );
   }
 
-  client = createClient<Database>(supabaseUrl, supabaseAnonKey);
+  client = createClient<Database>(config.supabaseUrl, config.supabaseAnonKey);
   return client;
 }
 

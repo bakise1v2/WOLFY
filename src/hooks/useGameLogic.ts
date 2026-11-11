@@ -23,6 +23,7 @@ import { useTranslations } from "next-intl";
 import { ALL_MODELS, PLAYER_MODELS, PROJECT_MODELS, isWolfRole, type GameState, type Player, type Phase, type Role, type DevPreset, type ModelRef, type StartGameOptions } from "@/types/game";
 import { gameStateAtom, isValidTransition, clearPersistedGameState, isRestorableGameState } from "@/store/game-machine";
 import { GameEntryGate } from "@/lib/game-entry-gate";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { createGameMatchingRoster } from "@/components/matching/game-matching-roster";
 import type { MatchingRoster } from "@/components/matching/matching-roster";
 import { getGeneratorModel, getModelSource } from "@/lib/api-keys";
@@ -51,7 +52,6 @@ import {
 } from "@/lib/game-flow-controller";
 import { playNarrator } from "@/lib/narrator-audio-player";
 import { PhaseManager } from "@/game/core/PhaseManager";
-import { supabase } from "@/lib/supabase";
 import { gameStatsTracker } from "@/hooks/useGameStats";
 import { gameSessionTracker } from "@/lib/game-session-tracker";
 import { continueAfterHunterShotWithBadgeTransfer } from "@/lib/hunter-badge-flow";
@@ -511,6 +511,11 @@ export function useGameLogic() {
   // 缓存 access token 用于游戏会话保存
   const accessTokenRef = useRef<string | null>(null);
   useEffect(() => {
+    if (!isSupabaseConfigured()) {
+      accessTokenRef.current = null;
+      return;
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       accessTokenRef.current = session?.access_token ?? null;
     });
