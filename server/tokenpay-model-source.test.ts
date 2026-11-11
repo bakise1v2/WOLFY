@@ -1,0 +1,197 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  resolveAiVoiceAvailability,
+  resolveModelSource,
+  setModelSource,
+} from "@/lib/api-keys";
+import { ALL_MODELS, AVAILABLE_MODELS, MODEL_IDS, SUMMARY_MODEL, REVIEW_MODEL } from "@/types/game";
+
+process.env.NEXT_PUBLIC_SUPABASE_URL ||= "https://example.supabase.co";
+process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ||= "test-publishable-key";
+
+test("model source keeps an explicit selection authoritative", () => {
+  assert.equal(
+    resolveModelSource({
+      storedSource: "project",
+      storedSourceExplicit: true,
+      legacyCustomEnabled: true,
+      hasLocalKey: true,
+      tokenPayConnected: true,
+    }),
+    "project",
+  );
+  assert.equal(
+    resolveModelSource({
+      storedSource: "tokenpay",
+      storedSourceExplicit: true,
+      tokenPayConnected: false,
+    }),
+    "tokenpay",
+  );
+  assert.equal(
+    resolveModelSource({
+      storedSource: "custom",
+      storedSourceExplicit: true,
+      hasLocalKey: false,
+    }),
+    "custom",
+  );
+});
+
+test("旧版本自动写入的 project 不会覆盖已连接的 TokenPay", () => {
+  assert.equal(
+    resolveModelSource({
+      storedSource: "project",
+      storedSourceExplicit: false,
+      tokenPayConnected: true,
+    }),
+    "tokenpay",
+  );
+});
+
+test("TokenPay 暂停角色配音，即使本地保存了自有语音 Key", () => {
+  assert.equal(resolveAiVoiceAvailability("project", false), false);
+  assert.equal(resolveAiVoiceAvailability("project", true, true), false);
+  assert.equal(resolveAiVoiceAvailability("tokenpay", false), false);
+  assert.equal(resolveAiVoiceAvailability("tokenpay", true), false);
+  assert.equal(resolveAiVoiceAvailability("tokenpay", false, true), false);
+  assert.equal(resolveAiVoiceAvailability("tokenpay", true, true), false);
+  assert.equal(resolveAiVoiceAvailability("custom", false), false);
+  assert.equal(resolveAiVoiceAvailability("custom", true), true);
+  assert.equal(resolveAiVoiceAvailability("custom", false, true), true);
+});
+
+test("项目 Key、TokenPay 和未配置语音 Key 的自有 Key 模式都不会发起 TTS 请求", async () => {
+  const { audioManager } = await import("@/lib/audio-manager");
+  const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const originalFetch = globalThis.fetch;
+  const values = new Map<string, string>();
+  const fakeWindow = new EventTarget() as EventTarget & {
+    localStorage: Storage;
+  };
+  Object.defineProperty(fakeWindow, "localStorage", {
+    configurable: true,
+    value: {
+      get length() {
+        return values.size;
+      },
+      clear: () => values.clear(),
+      getItem: (key: string) => values.get(key) ?? null,
+      key: (index: number) => [...values.keys()][index] ?? null,
+      removeItem: (key: string) => values.delete(key),
+      setItem: (key: string, value: string) => values.set(key, value),
+    } satisfies Storage,
+  });
+
+  let fetchCalls = 0;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: fakeWindow,
+  });
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response(null, { status: 500 });
+  };
+
+  try {
+    audioManager.setEnabled(true);
+    for (const [source, hasVoiceKeys] of [
+      ["project", false], ["tokenpay", false], ["custom", false],
+      ["project", true], ["tokenpay", true],
+    ] as const) {
+      setModelSource(source);
+      if (hasVoiceKeys) {
+        values.set("wolfcha_minimax_api_key", "test-minimax-key");
+        values.set("wolfcha_minimax_group_id", "test-group-id");
+        values.set("wolfcha_tokendance_api_key", "test-tokendance-key");
+      }
+      assert.equal(audioManager.isEnabled(), false);
+      for (const ttsProvider of ["minimax", "tokendance"] as const) {
+        const task = {
+          id: `tokenpay-no-tts-${hasVoiceKeys}-${ttsProvider}`,
+          text: "测试",
+          voiceId: "voice",
+          playerId: "player",
+          ttsProvider,
+        };
+        await audioManager.ensureReady(task);
+        await audioManager.prefetchTasks([task]);
+        audioManager.addToQueue(task);
+      }
+    }
+    assert.equal(fetchCalls, 0);
+  } finally {
+    audioManager.setEnabled(false);
+    globalThis.fetch = originalFetch;
+    if (originalWindowDescriptor) {
+      Object.defineProperty(globalThis, "window", originalWindowDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  }
+});
+
+test("legacy key settings migrate to exactly one model source", () => {
+  assert.equal(
+    resolveModelSource({
+      legacyCustomEnabled: true,
+      hasLocalKey: true,
+      tokenPayConnected: true,
+    }),
+    "custom",
+  );
+  assert.equal(
+    resolveModelSource({
+      legacyCustomEnabled: true,
+      hasLocalKey: false,
+      tokenPayConnected: true,
+    }),
+    "tokenpay",
+  );
+  assert.equal(resolveModelSource({}), "project");
+});
+
+test("TokenPay、总结和复盘默认使用 DeepSeek V4.1 Flash", () => {
+  const builtInModel = AVAILABLE_MODELS[0];
+  const selectableModel = ALL_MODELS.find(
+    (model) => model.model === MODEL_IDS.tokendance.deepseekV41Flash,
+  );
+
+  assert.equal(builtInModel.model, "deepseek-v4.1-flash");
+  assert.equal(SUMMARY_MODEL, builtInModel.model);
+  assert.equal(REVIEW_MODEL, builtInModel.model);
+  assert.deepEqual(builtInModel.reasoning, { enabled: false });
+  assert.deepEqual(selectableModel?.reasoning, { enabled: false });
+});
+
+test("TokenPay 会同时归一化旧存档的模型与 Provider", async () => {
+  const { resolveRequestModelForSource } = await import("@/lib/llm");
+  assert.deepEqual(
+    resolveRequestModelForSource(
+      "tokenpay",
+      MODEL_IDS.zenmux.geminiFlashLite,
+      "zenmux",
+    ),
+    {
+      model: MODEL_IDS.tokendance.deepseekV41Flash,
+      provider: "tokendance",
+    },
+  );
+});
+
+test("自定义 Key 仍保留用户显式选择的 Provider", async () => {
+  const { resolveRequestModelForSource } = await import("@/lib/llm");
+  assert.deepEqual(
+    resolveRequestModelForSource(
+      "custom",
+      MODEL_IDS.zenmux.geminiFlashLite,
+      "zenmux",
+    ),
+    {
+      model: MODEL_IDS.zenmux.geminiFlashLite,
+      provider: "zenmux",
+    },
+  );
+});

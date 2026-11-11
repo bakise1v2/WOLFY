@@ -1,0 +1,365 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import test from "node:test";
+import { createSinglePlayerContextAuditState } from "../../../scripts/single-player-context-audit";
+import { setLocale } from "@/i18n/locale-store";
+import { buildGameContext, buildPastDaysTranscript, PAST_DAYS_EXCERPT_ENABLED } from "@/lib/prompt-utils";
+import { recordVoteRound } from "@/lib/vote-rounds";
+import type { GameState, Phase, Role } from "@/types/game";
+
+process.env.NEXT_PUBLIC_SUPABASE_URL ||= "http://127.0.0.1:54321";
+process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ||= "context-regression-key";
+setLocale("zh");
+
+function fresh(phase: Phase = "DAY_SPEECH"): GameState {
+  const state = createSinglePlayerContextAuditState();
+  return { ...state, phase, day: 1, messages: [], currentSpeakerSeat: 0,
+    nightHistory: {}, dayHistory: {}, nightActions: {}, voteHistory: {},
+    dailySummaries: {}, dailySummaryFacts: {}, dailySummaryVoteData: {},
+    badge: { ...state.badge, candidates: [], holderSeat: null, history: {}, votes: {}, revoteCount: 0 },
+    roleAbilities: { ...state.roleAbilities, witchHealUsed: false, witchPoisonUsed: false, idiotRevealed: false },
+  };
+}
+
+const message = (state: GameState, content: string, phase: Phase, seat = 0, round?: number) => ({
+  id: content, playerId: state.players[seat].playerId, playerName: state.players[seat].displayName,
+  content, phase, day: state.day, timestamp: 1, speechRound: round,
+});
+
+const decisions: Phase[] = ["DAY_BADGE_SIGNUP", "DAY_BADGE_ELECTION", "BADGE_TRANSFER", "DAY_VOTE", "HUNTER_SHOOT", "WHITE_WOLF_KING_BOOM", "DAY_SPEECH", "DAY_LAST_WORDS", "DAY_PK_SPEECH"];
+
+// 来自玩家反馈的最小局面：1号单边预报2号查杀，被放逐后6号接警徽。
+// 只复现公开证据链，不把玩家期待的票型写成必须执行的策略。
+function seerFeedbackState(): GameState {
+  const state = fresh();
+  const roles: Role[] = ["Seer", "Werewolf", "Villager", "Werewolf", "Witch", "Hunter", "Villager", "Guard", "Werewolf", "WhiteWolfKing", "Idiot"];
+  state.players = state.players.map((player, seat) => ({
+    ...player, role: roles[seat], alive: seat !== 0, isHuman: seat === 5,
+    alignment: roles[seat] === "Werewolf" || roles[seat] === "WhiteWolfKing" ? "wolf" : "village",
+  }));
+  state.messages = [
+    message(state, "我是1号预言家，首夜查杀2号。", "DAY_BADGE_SPEECH", 0),
+    message(state, "预言家普通分析中段，可被摘录规则过滤。", "DAY_BADGE_SPEECH", 0),
+    message(state, "预言家警上发言收尾。", "DAY_BADGE_SPEECH", 0),
+    message(state, "1号太急着推人了，我没有身份要跳。", "DAY_BADGE_SPEECH", 1),
+    message(state, "全场没有第二个预言家，我站边1号，今天出2号。", "DAY_SPEECH", 5),
+    { ...message(state, "我仍然报2号查杀，警徽交给6号。", "DAY_LAST_WORDS", 0), isLastWords: true },
+    { ...message(state, "遗言中段也必须完整传入。", "DAY_LAST_WORDS", 0), isLastWords: true },
+    { ...message(state, "遗言最后一段。", "DAY_LAST_WORDS", 0), isLastWords: true },
+  ];
+  state.dayHistory = { 1: { executed: { seat: 0, votes: 6 } } };
+  state.nightHistory = { 1: { deaths: [], resultsAnnounced: true }, 2: { guardTarget: 5, deaths: [], resultsAnnounced: true } };
+  state.badge.holderSeat = 5;
+  state.day = 2;
+  state.currentSpeakerSeat = 6;
+  state.daySpeechStartSeat = 6;
+  state.messages.push(message(state, "我是6号，我明神了，警长归票2号。", "DAY_SPEECH", 5));
+  return state;
+}
+
+for (const locale of ["zh", "en"] as const) {
+  for (const isGenshinMode of [false, true]) {
+    test(`出局预言家证据：${locale}/${isGenshinMode ? "原神" : "普通"}允许继续分析公开查杀`, async () => {
+      await import("@/lib/game-master");
+      const { PhaseManager } = await import("../core/PhaseManager");
+      setLocale(locale);
+      try {
+        const state = seerFeedbackState();
+        state.isGenshinMode = isGenshinMode;
+        const manager = new PhaseManager();
+        for (const phase of ["DAY_SPEECH", "DAY_VOTE"] as const) {
+          state.phase = phase;
+          const prompt = manager.getPrompt(phase, { state }, state.players[6])!;
+          const full = `${prompt.system}\n${prompt.user}`;
+          assert.match(prompt.user, /我是1号预言家，首夜查杀2号/);
+          assert.match(prompt.user, /我仍然报2号查杀，警徽交给6号/);
+          assert.match(prompt.user, /我是6号，我明神了，警长归票2号/);
+          assert.equal(PAST_DAYS_EXCERPT_ENABLED, true);
+          assert.doesNotMatch(prompt.user, /预言家普通分析中段，可被摘录规则过滤/);
+          assert.match(prompt.user, /遗言中段也必须完整传入/);
+          assert.match(prompt.user, locale === "zh" ? /往日公开发言的逐字摘录/ : /verbatim excerpts of past days' public speeches/);
+          assert.doesNotMatch(full, /只讨论(?:当前)?存活玩家|避免围绕已出局玩家|不要过度复盘已出局玩家|(?:Only discuss|Discuss) living players only|Only discuss living players|avoid postmortems|avoid over-analyzing eliminated players/);
+          assert.match(full, locale === "zh" ? /已出局玩家的公开发言、身份声明、声称的查验、投票与警徽流转仍可作为推理依据/ : /Eliminated players' public speeches, role claims, claimed checks, votes, and badge transfers remain available for reasoning/);
+          assert.match(full, locale === "zh" ? /单边声明或持有警徽不等于身份已确认/ : /An uncontested claim or holding the badge does not confirm a role/);
+          assert.doesNotMatch(full, /<your_seer_checks>|<your_guard_info>|<your_wolf_team>/);
+          assert.doesNotMatch(full, /必须投2号|必须服从警长|must vote for Seat 2/i);
+        }
+      } finally { setLocale("zh"); }
+    });
+  }
+}
+
+// SHA-256 of the complete PromptResult captured before excerpt mode was implemented.
+const dayOnePromptBaselines: Record<string, string> = {
+  "zh/false/DAY_SPEECH": "d30438db2b64df2571f426e57fafc70413daf727aeca08bb1d483add4e80e172",
+  "zh/false/DAY_VOTE": "778be97ecf3be5e93d5a08c98452490eafd8cf802c5c66586695e2527246effe",
+  "zh/true/DAY_SPEECH": "b27163a430aec1c4aae0e44add98eb0a54672223dcc405ef467ad39e13e9b467",
+  "zh/true/DAY_VOTE": "778be97ecf3be5e93d5a08c98452490eafd8cf802c5c66586695e2527246effe",
+  "en/false/DAY_SPEECH": "991bfb6084f54710c345b3dd832a85504466f3978c3b4384f9b466a611f6df96",
+  "en/false/DAY_VOTE": "6095b5b04557dcf26e30db4f48c99ce7c524aabf64442a855279927a399665ee",
+  "en/true/DAY_SPEECH": "eb8b4846d6449f3a1aeb7cee4339ef2c9b49b9b982017b50749b905d231eab64",
+  "en/true/DAY_VOTE": "6095b5b04557dcf26e30db4f48c99ce7c524aabf64442a855279927a399665ee",
+};
+
+for (const locale of ["zh", "en"] as const) {
+  for (const isGenshinMode of [false, true]) {
+    test(`第1天完整Prompt：${locale}/${isGenshinMode ? "原神" : "普通"}与摘录改动前逐字相同`, async () => {
+      await import("@/lib/game-master");
+      const { PhaseManager } = await import("../core/PhaseManager");
+      setLocale(locale);
+      try {
+        for (const phase of ["DAY_SPEECH", "DAY_VOTE"] as const) {
+          const state = fresh(phase);
+          state.isGenshinMode = isGenshinMode;
+          state.messages = ["今日开场原话", "今日中间原话", "今日收尾原话"].map((content) =>
+            message(state, content, "DAY_SPEECH", 2));
+          const actor = state.players[0];
+          assert.equal(buildGameContext(state, actor, { excerptPastDays: true }), buildGameContext(state, actor, { excerptPastDays: false }));
+          const prompt = new PhaseManager().getPrompt(phase, { state }, actor)!;
+          assert.equal(createHash("sha256").update(JSON.stringify(prompt)).digest("hex"), dayOnePromptBaselines[`${locale}/${isGenshinMode}/${phase}`]);
+          for (const m of state.messages) assert.ok(prompt.user.includes(m.content), m.content);
+        }
+      } finally { setLocale("zh"); }
+    });
+  }
+}
+
+test("反馈场景：第三夜守卫能看到明神归票，但上一夜守过6号时不能连守", async () => {
+  await import("@/lib/game-master");
+  const { NightPhase } = await import("./NightPhase");
+  const state = seerFeedbackState();
+  state.day = 3;
+  state.phase = "NIGHT_GUARD_ACTION";
+  state.nightActions.lastGuardTarget = 5;
+  const phase = new NightPhase();
+  const prompt = phase.getPrompt({ state }, state.players[7]);
+  assert.match(prompt.user, /我是6号，我明神了，警长归票2号/);
+  assert.match(prompt.user, /我是1号预言家，首夜查杀2号/);
+  assert.match(prompt.system, /上晚保护了6号，今晚不能选/);
+  assert.doesNotMatch(prompt.system.split("可选: ")[1]?.split("\n")[0] ?? "", /6号/);
+  state.nightActions.lastGuardTarget = 7;
+  const eligible = phase.getPrompt({ state }, state.players[7]);
+  assert.match(eligible.system.split("可选: ")[1]?.split("\n")[0] ?? "", /6号/);
+});
+
+for (const phase of decisions) {
+  test(`阶段矩阵：${phase} 必须包含已公开的当天证据`, async () => {
+    await import("@/lib/game-master");
+    const { PhaseManager } = await import("../core/PhaseManager");
+    const state = fresh(phase);
+    state.pkSource = "badge";
+    state.badge.candidates = [0, 1];
+    state.messages = [message(state, "唯一公开证据：3号曾承认没有查验结果", "DAY_BADGE_SPEECH", 2)];
+    const role = phase === "HUNTER_SHOOT" ? "Hunter" : phase === "WHITE_WOLF_KING_BOOM" ? "WhiteWolfKing" : "Villager";
+    const actor = state.players.find((p) => p.role === role)!;
+    state.currentSpeakerSeat = actor.seat;
+    const prompt = new PhaseManager().getPrompt(phase, { state }, actor)!;
+    assert.match(prompt.user, /唯一公开证据：3号曾承认没有查验结果/);
+  });
+}
+
+test("警徽 PK 临时切换为自爆提示词，仍不能提前得知刀口结果；公布后才可知", async () => {
+  const { generateWhiteWolfKingBoomDecision } = await import("@/lib/game-master");
+  const state = fresh("DAY_PK_SPEECH");
+  state.pkSource = "badge";
+  state.badge.candidates = [0, 1];
+  state.nightHistory = { 1: { wolfTarget: 7, deaths: [{ seat: 7, reason: "wolf" }] } };
+  const actor = state.players.find((p) => p.role === "WhiteWolfKing")!;
+  let prompt = "";
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    if (String(input) === "/api/demo-config") return Response.json({ active: false, enabled: false });
+    prompt = String(init?.body);
+    return Response.json({ id: "test", choices: [{ message: { role: "assistant", content: '{"action":"pass"}' }, finish_reason: "stop" }] });
+  };
+  try {
+    await generateWhiteWolfKingBoomDecision(state, actor);
+    assert.match(prompt, /结果待天亮公布/);
+    assert.doesNotMatch(prompt, /目标当晚出局/);
+    assert.equal(state.nightHistory[1].resultsAnnounced, undefined);
+    state.nightHistory[1].resultsAnnounced = true;
+    await generateWhiteWolfKingBoomDecision(state, actor);
+    assert.match(prompt, /目标当晚出局/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("守卫保留每夜路线，结果按当夜公开结算判断，普通村民看不到守护记录", () => {
+  const state = fresh(); state.day = 3;
+  const guard = state.players.find((p) => p.role === "Guard")!;
+  state.nightHistory = { 1: { guardTarget: 0, deaths: [] }, 2: { guardTarget: 1, deaths: [] }, 3: { guardTarget: 2, deaths: [{ seat: 2, reason: "poison" }], resultsAnnounced: false } };
+  state.nightActions.lastGuardTarget = 2;
+  state.players[0].alive = false;
+  const privateInfo = buildGameContext(state, guard).split("</your_guard_info>")[0];
+  assert.match(privateInfo, /第1夜 → 1号.*守护目标当夜未出局/);
+  assert.match(privateInfo, /第2夜 → 2号.*守护目标当夜未出局/);
+  assert.match(privateInfo, /第3夜 → 3号.*待天亮公布/);
+  assert.match(privateInfo, /不能连续守护 3号/);
+  assert.doesNotMatch(buildGameContext(state, state.players.find((p) => p.role === "Villager")!), /<your_guard_info>/);
+});
+
+test("实战回归：守护目标存活，但其他人死亡，不能把目标生存写成全场平安夜", () => {
+  const state = fresh(); state.day = 2;
+  const guard = state.players.find((p) => p.role === "Guard")!;
+  state.nightHistory = { 1: { guardTarget: guard.seat, deaths: [], resultsAnnounced: true },
+    2: { guardTarget: 0, deaths: [{ seat: 2, reason: "wolf" }], resultsAnnounced: true } };
+  const context = buildGameContext(state, guard).split("</your_guard_info>")[0];
+  assert.match(context, /全场第1夜：无人出局（平安夜）/);
+  assert.match(context, /第2夜 → 1号.*守护目标当夜未出局；全场第2夜：3号出局，并非平安夜/);
+  assert.doesNotMatch(context, /当晚平安无事|守护成功/);
+  assert.match(context, /不能证明守护生效/);
+  state.nightHistory[2].resultsAnnounced = false;
+  const hidden = buildGameContext(state, guard).split("</your_guard_info>")[0];
+  assert.match(hidden, /第2夜 → 1号.*待天亮公布/);
+  assert.doesNotMatch(hidden, /全场第2夜|3号出局/);
+  state.nightHistory[2] = { guardTarget: 0, resultsAnnounced: true };
+  assert.match(buildGameContext(state, guard), /当夜结算记录缺失，不能判断目标生死或是否平安夜/);
+});
+
+test("跨日记录保留警上、PK轮次、警下和遗言标签，不把现在的死亡状态套入过往发言", () => {
+  const state = fresh();
+  state.messages = [
+    message(state, "警上承诺", "DAY_BADGE_SPEECH", 0, 0),
+    { ...message(state, "第一次PK", "DAY_PK_SPEECH", 0, 1), pkSource: "badge" as const },
+    message(state, "警下改口", "DAY_SPEECH", 0, 2),
+    { ...message(state, "第二次PK", "DAY_PK_SPEECH", 0, 3), pkSource: "vote" as const },
+    message(state, "遗言证据", "DAY_LAST_WORDS", 0, 4),
+  ];
+  state.day = 2; state.players[0].alive = false;
+  const transcript = buildPastDaysTranscript(state);
+  assert.match(transcript, /警徽竞选发言/);
+  assert.match(transcript, /PK.*警徽.*第1轮/);
+  assert.match(transcript, /PK.*放逐.*第2轮/);
+  assert.match(transcript, /遗言/);
+  assert.doesNotMatch(transcript, /已出局/);
+  assert.ok(transcript.indexOf("警上承诺") < transcript.indexOf("警下改口"));
+});
+
+test("结算免死白痴：中间态与最终态都不记录处决，公开票型标为免死", async () => {
+  await import("@/lib/game-master");
+  const { VotePhase } = await import("./VotePhase");
+  const state = fresh("DAY_VOTE");
+  const idiot = state.players.find((p) => p.role === "Idiot")!;
+  state.votes = Object.fromEntries(state.players.filter((p) => p !== idiot).map((p) => [p.playerId, idiot.seat]));
+  const snapshots: GameState[] = [];
+  await new VotePhase().handleAction({ state, extras: {
+    token: { value: 1, isValid: () => true }, humanPlayer: null,
+    setGameState: (next: GameState) => snapshots.push(next), setDialogue: () => {}, setIsWaitingForAI: () => {},
+    waitForUnpause: async () => {}, isTokenValid: () => true,
+    onVoteComplete: async (next: GameState) => snapshots.push(next), onGameEnd: async () => {}, runAISpeech: async () => {},
+  } }, { type: "RESOLVE_VOTES" });
+  const end = snapshots.at(-1)!;
+  assert.ok(snapshots.every((s) => !s.dayHistory?.[1]?.executed));
+  assert.equal(end.players[idiot.seat].alive, true);
+  assert.equal(end.roleAbilities.idiotRevealed, true);
+  assert.equal(end.voteRounds?.[0].outcome, "idiot-revealed");
+  assert.match(buildGameContext(end, end.players[0]), /白痴翻牌免死/);
+  const legacy = { ...end, voteRounds: undefined, dayHistory: { 1: { executed: { seat: idiot.seat, votes: 9 }, idiotRevealed: { seat: idiot.seat } } } };
+  assert.match(buildGameContext(legacy, legacy.players[0]), /白痴翻牌免死/);
+  assert.doesNotMatch(buildGameContext(legacy, legacy.players[0]), /<today_deaths>/);
+});
+
+test("投票快照独立保留警徽与放逐各轮、候选人和当时警长，不能被后续修改覆盖", () => {
+  let state = fresh();
+  const voters = { [state.players[0].playerId]: 1, [state.players[2].playerId]: -1 };
+  for (const kind of ["badge", "execution"] as const) {
+    state = recordVoteRound(state, { kind, round: 1, candidates: [1, 2], votes: voters, sheriffSeat: kind === "execution" ? 0 : null, winnerSeat: null, outcome: "tie" });
+    state = recordVoteRound(state, { kind, round: 2, candidates: [1], votes: { [state.players[0].playerId]: 1 }, sheriffSeat: null, winnerSeat: 1, outcome: kind === "badge" ? "elected" : "executed" });
+  }
+  voters[state.players[0].playerId] = 9;
+  state.badge.holderSeat = 5;
+  assert.equal(state.voteRounds?.length, 4);
+  assert.equal(state.voteRounds![0].votes[state.players[0].playerId], 1);
+  const duplicate = recordVoteRound(state, { ...state.voteRounds![0], votes: {} });
+  assert.equal(duplicate.voteRounds!.length, 4);
+  const context = buildGameContext(state, state.players[0]);
+  assert.match(context, /警徽选举 第1轮/); assert.match(context, /警徽选举 第2轮/);
+  assert.match(context, /放逐投票 第1轮/); assert.match(context, /放逐投票 第2轮/);
+  assert.match(context, /1.5/); assert.doesNotMatch(context, /(?<!\d)0号/);
+});
+
+test("历史提交以段落 ID 幂等，不能吞掉同文的不同段落或下一轮的发言", async () => {
+  const { addPlayerMessage } = await import("@/lib/game-master");
+  let state = fresh(); const player = state.players[0];
+  state = addPlayerMessage(state, player.playerId, "不对。", { id: "request-a:0" });
+  state = addPlayerMessage(state, player.playerId, "不对。", { id: "request-a:0" });
+  state = addPlayerMessage(state, player.playerId, "不对。", { id: "request-a:1" });
+  state = addPlayerMessage(state, player.playerId, "不对。", { id: "request-b:0" });
+  assert.equal(state.messages.length, 3);
+});
+
+test("真实放逐结算经过平票 PK 后仍保留第一轮和第二轮票型", async () => {
+  await import("@/lib/game-master");
+  const { VotePhase } = await import("./VotePhase");
+  const state = fresh("DAY_VOTE");
+  // 四人参与有效票，其余弃票：第一轮 2:2。
+  state.votes = Object.fromEntries(state.players.map((p, index) => [p.playerId, index < 2 ? 4 : index < 4 ? 5 : -1]));
+  let current = state;
+  const runtime = {
+    token: { value: 1, isValid: () => true }, humanPlayer: null,
+    setGameState: (next: GameState) => { current = next; }, setDialogue: () => {}, setIsWaitingForAI: () => {},
+    waitForUnpause: async () => {}, isTokenValid: () => true,
+    onVoteComplete: async (next: GameState) => { current = next; }, onGameEnd: async () => {}, runAISpeech: async () => {},
+  };
+  const phase = new VotePhase();
+  await phase.handleAction({ state, extras: runtime }, { type: "RESOLVE_VOTES" });
+  assert.equal(current.phase, "DAY_PK_SPEECH");
+  assert.equal(current.voteRounds?.[0].outcome, "tie");
+  const firstVotes = { ...current.voteRounds![0].votes };
+  current = { ...current, phase: "DAY_VOTE", votes: Object.fromEntries(state.players.map((p, index) => [p.playerId, index < 3 ? 4 : index === 3 ? 5 : -1])) };
+  await phase.handleAction({ state: current, extras: runtime }, { type: "RESOLVE_VOTES" });
+  assert.equal(current.voteRounds?.length, 2);
+  assert.deepEqual(current.voteRounds![0].votes, firstVotes);
+  assert.equal(current.voteRounds![1].round, 2);
+  assert.equal(current.voteRounds![1].winnerSeat, 4);
+});
+
+test("开发回滚清掉未来轮次和夜间公开标记，避免未来信息留在提示词", async () => {
+  await import("@/lib/game-master");
+  const { applyBackwardJump } = await import("@/lib/SmartJumpManager");
+  let state = fresh("DAY_RESOLVE");
+  state.nightHistory = { 1: { resultsAnnounced: true, deaths: [] } };
+  state = recordVoteRound(state, { kind: "badge", round: 1, candidates: [0], votes: {}, sheriffSeat: null, winnerSeat: 0, outcome: "elected" });
+  state = recordVoteRound(state, { kind: "execution", round: 1, candidates: [0], votes: {}, sheriffSeat: 0, winnerSeat: null, outcome: "tie" });
+  const result = applyBackwardJump(state, { day: 1, phase: "DAY_BADGE_SIGNUP" }, {
+    direction: "backward", crossDay: false, missingTasks: [], playersToRevive: [], abilitiesToRestore: [], daysToClean: [],
+  });
+  assert.deepEqual(result.voteRounds, []);
+  assert.equal(result.nightHistory?.[1].resultsAnnounced, false);
+});
+
+test("实战事实账本区分累计平安夜和连续平安夜，个人票型不能混淆警徽与放逐", async () => {
+  const { buildDecisionGrounding } = await import("@/lib/prompt-utils");
+  const state = fresh(); state.day = 5;
+  const actor = state.players[0];
+  state.nightHistory = { 1: { deaths: [] }, 2: { deaths: [] }, 3: { deaths: [{ seat: 0, reason: "wolf" }] }, 4: { deaths: [{ seat: 7, reason: "wolf" }] }, 5: { deaths: [], resultsAnnounced: false } };
+  state.voteRounds = [
+    { id: "badge-1", kind: "badge", day: 1, round: 1, candidates: [0, 7, 9], votes: {}, sheriffSeat: null, winnerSeat: 7, outcome: "elected" },
+    { id: "execution-1", kind: "execution", day: 1, round: 1, candidates: [8], votes: { [actor.playerId]: 8 }, sheriffSeat: 7, winnerSeat: 8, outcome: "executed" },
+  ];
+  const context = buildDecisionGrounding(state, actor);
+  assert.match(context, /第3夜：1号出局，不是平安夜/);
+  assert.match(context, /第4夜：8号出局，不是平安夜/);
+  assert.match(context, /第5夜：结果尚未公布/);
+  assert.match(context, /本人第1天警徽选举第1轮：作为候选人没有投票资格/);
+  assert.match(context, /本人第1天放逐第1轮：投给9号/);
+  state.nightHistory[5].resultsAnnounced = true;
+  assert.match(buildDecisionGrounding(state, actor), /第5夜：无人出局（平安夜）/);
+});
+
+test("最后发言者得到明确收尾约束，投票输入末尾保留本人的完整公开结论", async () => {
+  await import("@/lib/game-master");
+  const { PhaseManager } = await import("../core/PhaseManager");
+  const state = fresh(); state.badge.holderSeat = 0; state.daySpeechStartSeat = 1;
+  const actor = state.players[0];
+  state.messages = [message(state, "我今天不投6号，我的最终选择是10号。", "DAY_SPEECH")];
+  const manager = new PhaseManager();
+  assert.match(manager.getPrompt("DAY_SPEECH", { state }, actor)!.user, /你是本轮最后发言者/);
+  state.phase = "DAY_VOTE";
+  const vote = manager.getPrompt("DAY_VOTE", { state }, actor)!.user;
+  assert.match(vote.split("<my_public_position>")[1], /我今天不投6号，我的最终选择是10号/);
+  // 已表态的默认按表态投，只有发言之后出现新信息才能改；没表态的不要求“延续”，否则模型会编造立场并跟票。
+  assert.match(vote, /公开发言里说过要投谁，默认就投那个人/);
+  assert.match(vote, /只有在你那次发言之后出现了新的身份声明、新的查验结果、警长归票或主持人公告，才可以改投/);
+  assert.match(vote, /发言里没有说过要投谁，按 analysis 的结论决定/);
+  assert.doesNotMatch(vote, /延续自己的公开结论/);
+});

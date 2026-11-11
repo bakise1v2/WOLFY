@@ -23,7 +23,7 @@
 # misc
 .DS_Store
 *.pem
-
+supabase/.temp/
 # debug
 npm-debug.log*
 yarn-debug.log*
@@ -33,11 +33,20 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
+.private-access/
 
 # vercel
 .vercel
+.netlify
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-.neon
+
+# logs
+ai-logs.json
+ai-logs.jsonl
+/dry-runs/
+
+# windsurf rules (local only)
+.windsurf/rules/renewlog.md

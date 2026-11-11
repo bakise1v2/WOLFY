@@ -1,230 +1,105 @@
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { useAuth } from "@/lib/auth-context";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import Link from "next/link";
-import {
-  ArrowLeft,
-  Shield,
-  UserPlus,
-  Ban,
-  CheckCircle,
-  Loader2,
-} from "lucide-react";
+import { getPrivateAccessProfiles, PRIVATE_ACCESS_COOKIE, parseAccessSessionCookieValue } from "@/lib/private-access";
+import { AdminAccessManager } from "@/components/game/AdminAccessManager";
+import { AdminPrivateGames } from "@/components/game/PrivateGames";
 
-interface UserRow {
-  id: string;
-  email: string;
-  displayName: string;
-  role: string;
-  disabled: boolean;
-  createdAt: string;
-}
+export default async function AdminPage() {
+  const cookieStore = await cookies();
+  const raw = cookieStore.get(PRIVATE_ACCESS_COOKIE)?.value;
+  const session = await parseAccessSessionCookieValue(raw);
 
-export default function AdminPage() {
-  const { user, loading, isAdmin } = useAuth();
-  const router = useRouter();
-  const [users, setUsers] = useState<UserRow[]>([]);
-  const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({
-    email: "",
-    password: "",
-    displayName: "",
-    role: "player" as "player" | "admin",
-  });
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-
-  const loadUsers = async () => {
-    const res = await fetch("/api/admin/users");
-    if (res.ok) {
-      const data = await res.json();
-      setUsers(data);
-    }
-  };
-
-  useEffect(() => {
-    if (!loading) {
-      if (!user) router.replace("/login");
-      else if (!isAdmin) router.replace("/");
-      else loadUsers();
-    }
-  }, [user, loading, isAdmin, router]);
-
-  const createUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setCreating(true);
-    setError("");
-    setMessage("");
-    try {
-      const res = await fetch("/api/admin/create-user", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Erreur");
-      setMessage(`Compte créé : ${form.displayName}`);
-      setForm({ email: "", password: "", displayName: "", role: "player" });
-      loadUsers();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Erreur de création");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const toggleDisabled = async (id: string, currentlyDisabled: boolean) => {
-    try {
-      await fetch("/api/admin/toggle-user", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, disabled: !currentlyDisabled }),
-      });
-      loadUsers();
-    } catch {
-      setError("Impossible de modifier le compte.");
-    }
-  };
-
-  if (loading || !isAdmin) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="animate-spin text-violet-400" />
-      </div>
-    );
+  if (!session || session.role !== "admin") {
+    redirect("/");
   }
 
+  const profiles = await getPrivateAccessProfiles();
+  const admins = profiles.filter((profile) => profile.role === "admin");
+  const players = profiles.filter((profile) => profile.role === "player");
+  const reserves = profiles.filter((profile) => profile.role === "reserve");
+
   return (
-    <div className="min-h-screen">
-      <header className="border-b border-border/60 bg-card/40 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center gap-3">
-          <Link href="/" className="p-2 rounded-lg hover:bg-muted text-violet-300">
-            <ArrowLeft size={20} />
-          </Link>
-          <Shield className="text-accent" size={20} />
-          <h1 className="font-bold text-lg">Administration</h1>
-        </div>
-      </header>
-
-      <main className="max-w-4xl mx-auto px-4 py-6 space-y-8">
-        <section className="bg-card border border-border rounded-2xl p-5">
-          <h2 className="font-semibold mb-4 flex items-center gap-2">
-            <UserPlus size={18} className="text-accent" />
-            Créer un compte (max 10 au total)
-          </h2>
-          <form onSubmit={createUser} className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <input
-                type="text"
-                placeholder="Pseudonyme"
-                required
-                value={form.displayName}
-                onChange={(e) => setForm({ ...form, displayName: e.target.value })}
-                className="px-4 py-2.5 rounded-xl bg-muted border border-border text-white focus:outline-none focus:ring-2 focus:ring-primary/60"
-              />
-              <input
-                type="email"
-                placeholder="E-mail"
-                required
-                value={form.email}
-                onChange={(e) => setForm({ ...form, email: e.target.value })}
-                className="px-4 py-2.5 rounded-xl bg-muted border border-border text-white focus:outline-none focus:ring-2 focus:ring-primary/60"
-              />
-              <input
-                type="password"
-                placeholder="Mot de passe (min 8)"
-                required
-                minLength={8}
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-                className="px-4 py-2.5 rounded-xl bg-muted border border-border text-white focus:outline-none focus:ring-2 focus:ring-primary/60"
-              />
-              <select
-                value={form.role}
-                onChange={(e) =>
-                  setForm({ ...form, role: e.target.value as "player" | "admin" })
-                }
-                className="px-4 py-2.5 rounded-xl bg-muted border border-border text-white focus:outline-none focus:ring-2 focus:ring-primary/60"
-              >
-                <option value="player">Joueur</option>
-                <option value="admin">Administrateur</option>
-              </select>
-            </div>
-            <button
-              type="submit"
-              disabled={creating || users.length >= 10}
-              className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-primary hover:bg-violet-600 disabled:opacity-50 font-medium"
-            >
-              {creating ? "Création..." : "Créer le compte"}
-            </button>
-          </form>
-          {message && <p className="mt-3 text-sm text-green-400">{message}</p>}
-          {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
-          {users.length >= 10 && (
-            <p className="mt-2 text-sm text-amber-400">Limite de 10 comptes atteinte.</p>
-          )}
-        </section>
-
-        <section className="bg-card border border-border rounded-2xl p-5">
-          <h2 className="font-semibold mb-4">Comptes ({users.length}/10)</h2>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-violet-400 border-b border-border">
-                  <th className="pb-2 pr-2">Pseudo</th>
-                  <th className="pb-2 pr-2">E-mail</th>
-                  <th className="pb-2 pr-2">Rôle</th>
-                  <th className="pb-2 pr-2">Statut</th>
-                  <th className="pb-2">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((u) => (
-                  <tr key={u.id} className="border-b border-border/50">
-                    <td className="py-2.5 pr-2">{u.displayName}</td>
-                    <td className="py-2.5 pr-2 text-violet-300">{u.email}</td>
-                    <td className="py-2.5 pr-2">
-                      {u.role === "admin" ? (
-                        <span className="text-accent">Admin</span>
-                      ) : (
-                        "Joueur"
-                      )}
-                    </td>
-                    <td className="py-2.5 pr-2">
-                      {u.disabled ? (
-                        <span className="text-red-400">Désactivé</span>
-                      ) : (
-                        <span className="text-green-400">Actif</span>
-                      )}
-                    </td>
-                    <td className="py-2.5">
-                      {u.id !== user?.id && (
-                        <button
-                          onClick={() => toggleDisabled(u.id, u.disabled)}
-                          className="p-1.5 rounded-lg hover:bg-muted"
-                          title={u.disabled ? "Réactiver" : "Désactiver"}
-                        >
-                          {u.disabled ? (
-                            <CheckCircle size={16} className="text-green-400" />
-                          ) : (
-                            <Ban size={16} className="text-red-400" />
-                          )}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+    <main className="min-h-screen bg-slate-950 px-6 py-10 text-slate-100">
+      <div className="mx-auto max-w-6xl">
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.32em] text-violet-300">Private Board</p>
+            <h1 className="mt-2 text-3xl font-semibold">Panneau d’administration</h1>
           </div>
-        </section>
+          <div className="flex items-center gap-3">
+            <Link
+              href="/"
+              className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
+            >
+              Retour au jeu
+            </Link>
+            <div className="rounded-full border border-violet-500/40 bg-violet-500/10 px-4 py-2 text-sm text-violet-200">
+              {session.name}
+            </div>
+          </div>
+        </div>
 
-        <p className="text-xs text-violet-500/70 text-center">
-          Les permissions administrateur sont vérifiées côté serveur.
-        </p>
-      </main>
-    </div>
+        <div className="mb-8 grid gap-4 md:grid-cols-3">
+          <div className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5">
+            <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Administrateurs</div>
+            <div className="mt-3 text-3xl font-bold text-amber-300">{admins.length}</div>
+          </div>
+          <div className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5">
+            <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Joueurs</div>
+            <div className="mt-3 text-3xl font-bold text-sky-300">{players.length}</div>
+          </div>
+          <div className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5">
+            <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Codes de secours</div>
+            <div className="mt-3 text-3xl font-bold text-emerald-300">{reserves.length}</div>
+          </div>
+        </div>
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          <section className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5">
+            <h2 className="mb-4 text-xl font-semibold">Comptes actifs</h2>
+            <div className="space-y-3">
+              {profiles.map((profile) => (
+                <div key={profile.id} className="flex items-center justify-between rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2">
+                  <div>
+                    <div className="font-medium text-white">{profile.label}</div>
+                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{profile.role}</div>
+                  </div>
+                  <span className="rounded-full border border-slate-600 px-2 py-1 text-xs text-slate-300">
+                    {profile.role === "admin" ? "Admin" : profile.role === "reserve" ? "Secours" : "Joueur"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5">
+            <h2 className="mb-4 text-xl font-semibold">Sécurité</h2>
+            <ul className="space-y-3 text-sm text-slate-300">
+              <li>• Vérification serveur avant accès au salon.</li>
+              <li>• Maximum 10 comptes principaux et 2 codes de secours.</li>
+              <li>• Les codes sont stockés sous forme de condensat SHA-256.</li>
+              <li>• Les rôles secrets et cartes restent côté serveur.</li>
+              <li>• Le panneau est réservé aux comptes administrateurs.</li>
+            </ul>
+          </section>
+        </div>
+
+        <div className="mt-6">
+          <AdminPrivateGames />
+        </div>
+
+        <div className="mt-6">
+          <AdminAccessManager />
+        </div>
+
+        <section className="mt-6 rounded-2xl border border-amber-700/50 bg-amber-950/20 p-5">
+          <h2 className="text-lg font-semibold text-amber-200">Limites actuelles</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-300">
+            Les parties privées démarrent avec 5 à 10 membres, administrateurs compris. Les salons et leur état sont stockés sur cette instance locale en développement; une base Supabase est nécessaire pour les partager en production.
+          </p>
+        </section>
+      </div>
+    </main>
   );
 }
